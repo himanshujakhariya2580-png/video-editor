@@ -4,7 +4,6 @@ import os
 import textwrap
 from faster_whisper import WhisperModel
 
-# Whisper model load karein (Hindi + English dono ke liye best)
 whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
 
 def format_timestamp(seconds):
@@ -26,27 +25,21 @@ def generate_srt(segments, srt_path):
             f.write(f"{i}\n{start} --> {end}\n{seg.text.strip()}\n\n")
 
 def escape_ffmpeg_text(text):
-    # FFmpeg drawtext ke special characters safe karne ke liye
     return text.replace(":", "\\:").replace("'", "").replace('"', "").replace("%", "\\%")
 
 def process_video(
     input_video,
-    # 1. Silence Cut Controls
     enable_silence_cut,
     silence_threshold,
-    # 2. Vertical Crop Controls
     enable_vertical_crop,
-    # 3. Auto Hook Controls
     enable_hook,
     hook_mode,
     custom_hook_text,
     enable_hook_zoom,
     enable_hook_sfx,
     hook_sfx_file,
-    # 4. Auto Captions Controls
     enable_captions,
     caption_font_size,
-    # 5. BGM Controls
     enable_bgm,
     bgm_file,
     bgm_volume
@@ -58,14 +51,16 @@ def process_video(
     log = ["🚀 Processing shuru ho rahi hai..."]
 
     try:
-        # STEP 1: Silence Cut (ON/OFF)
+        # STEP 1: Fast FFmpeg Silence Cut (ON/OFF)
         if enable_silence_cut:
             out_silence = "step1_silence.mp4"
+            db_level = -55 + (silence_threshold * 2)
+            af_filter = f"silenceremove=stop_periods=-1:stop_duration=0.4:stop_threshold={db_level}dB"
             cmd = [
-                "auto-editor", current_video,
-                "--margin", "0.2sec",
-                "--edit", f"audio:threshold={silence_threshold}%",
-                "-o", out_silence
+                "ffmpeg", "-y", "-i", current_video,
+                "-af", af_filter,
+                "-vf", "setpts=N/FRAME_RATE/TB",
+                out_silence
             ]
             subprocess.run(cmd, check=True)
             current_video = out_silence
@@ -87,19 +82,18 @@ def process_video(
         else:
             log.append("⏭ [OFF] 9:16 Vertical Crop skipped.")
 
-        # Whisper Transcription (Sirf tab chalega jab Hook Auto-Detect ya Captions ON hon)
+        # Whisper Transcription
         segments = None
         if (enable_hook and hook_mode == "Auto-Detect from Speech") or enable_captions:
             log.append("🎙 Audio transcribe ho raha hai...")
             segments = transcribe_video(current_video)
 
-        # STEP 3: Auto Hook Generator - First 3.5 Seconds (ON/OFF)
+        # STEP 3: Auto Hook Generator (ON/OFF)
         if enable_hook:
             out_hook = "step3_hook.mp4"
             if hook_mode == "Custom Text" and custom_hook_text.strip():
                 raw_hook = custom_hook_text.strip()
             elif segments and len(segments) > 0:
-                # Pehle 1-2 segments se catchy hook text banana
                 raw_hook = " ".join([s.text.strip() for s in segments[:2]])[:55].upper() + "..."
             else:
                 raw_hook = "WATCH TILL THE END!"
@@ -108,15 +102,9 @@ def process_video(
             safe_hook = escape_ffmpeg_text(wrapped_hook)
 
             vf_filters = []
-            # Hook Zoom-In Effect (First 3.5 seconds mein smooth punch-in)
             if enable_hook_zoom:
-                vf_filters.append(
-                    "scale=iw*1.12:ih*1.12,crop=iw/1.12:ih/1.12:"
-                    "x='if(lt(t,3.5), (iw-ow)/2, (iw-ow)/2)':"
-                    "y='if(lt(t,3.5), (ih-oh)/2, (ih-oh)/2)'"
-                )
+                vf_filters.append("scale=iw*1.12:ih*1.12,crop=iw/1.12:ih/1.12:(iw-ow)/2:(ih-oh)/2")
 
-            # Hook Banner Text Overlay (First 3.5 seconds)
             drawtext_filter = (
                 f"drawtext=text='{safe_hook}':"
                 "fontcolor=yellow:fontsize=42:borderw=3:bordercolor=black:"
@@ -127,7 +115,6 @@ def process_video(
             vf_filters.append(drawtext_filter)
             vf_chain = ",".join(vf_filters)
 
-            # Hook Sound Effect (Whoosh/Pop) agar ON aur file uploaded ho
             if enable_hook_sfx and hook_sfx_file:
                 cmd = [
                     "ffmpeg", "-y", "-i", current_video, "-i", hook_sfx_file,
@@ -188,27 +175,17 @@ def process_video(
     except Exception as e:
         return None, f"❌ Error aaya hai:\n{str(e)}"
 
-
-# ==================== GRADIO UI DASHBOARD ====================
 with gr.Blocks(theme=gr.themes.Soft(), title="Free Video Edit Automation Studio") as demo:
     gr.Markdown("# 🎬 Free Video Edit Automation Studio (Modular ON/OFF Controls)")
     
     with gr.Row():
-        # Left Column: Input & Feature Toggles
         with gr.Column(scale=1):
             video_in = gr.Video(label="1. Apna Raw Video Upload Karein")
             
             with gr.Accordion("🪝 1. Auto Hook Settings (First 3.5 Sec)", open=True):
                 chk_hook = gr.Checkbox(label="Enable Auto Hook (ON / OFF)", value=True)
-                hook_mode = gr.Radio(
-                    ["Auto-Detect from Speech", "Custom Text"],
-                    value="Auto-Detect from Speech",
-                    label="Hook Text Source"
-                )
-                custom_hook_text = gr.Textbox(
-                    label="Custom Hook Text",
-                    placeholder="E.g., 99% log yeh galti karte hain..."
-                )
+                hook_mode = gr.Radio(["Auto-Detect from Speech", "Custom Text"], value="Auto-Detect from Speech", label="Hook Text Source")
+                custom_hook_text = gr.Textbox(label="Custom Hook Text", placeholder="E.g., 99% log yeh galti karte hain...")
                 chk_hook_zoom = gr.Checkbox(label="Hook Punch Zoom-In (ON / OFF)", value=True)
                 chk_hook_sfx = gr.Checkbox(label="Hook Sound Effect - Whoosh/Pop (ON / OFF)", value=False)
                 hook_sfx_file = gr.Audio(type="filepath", label="Hook SFX Audio File (Optional)")
@@ -231,7 +208,6 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Free Video Edit Automation Studio"
 
             run_btn = gr.Button("🚀 Start Auto Edit", variant="primary", size="lg")
 
-        # Right Column: Output Preview & Logs
         with gr.Column(scale=1):
             video_out = gr.Video(label="Final Edited Video")
             status_box = gr.Textbox(label="Live Processing Logs", lines=12)
